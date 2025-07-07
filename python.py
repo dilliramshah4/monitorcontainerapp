@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3 
 
 import os
 import smtplib
@@ -29,7 +29,7 @@ sub_client = SubscriptionClient(credential)
 
 # === Send Email ===
 def send_summary_email(report_body: str):
-    subject = "[Pangea] Azure Container Apps Health Report"
+    subject = "[Pangea] Unhealthy Azure Container Apps Detected"
 
     msg = MIMEText(report_body)
     msg["Subject"] = subject
@@ -47,7 +47,8 @@ def send_summary_email(report_body: str):
 
 # === Check Container Apps Across All Subscriptions ===
 def check_all_container_apps():
-    full_report = "Dear Pangea Production Team,\n\nHere is the latest health status of Azure Container Apps:\n"
+    full_report = "Dear Pangea Production Team,\n\nUnhealthy Azure Container Apps have been detected:\n"
+    any_unhealthy = False  # Only trigger mail if True
 
     for sub in sub_client.subscriptions.list():
         sub_id = sub.subscription_id
@@ -62,9 +63,6 @@ def check_all_container_apps():
                 rg_name = rg.name
                 print(f"\n🔍 Resource Group: {rg_name}")
 
-                healthy_apps = {}
-                unhealthy_apps = {}
-
                 try:
                     apps = container_client.container_apps.list_by_resource_group(rg_name)
                     for app in apps:
@@ -72,38 +70,28 @@ def check_all_container_apps():
                         try:
                             details = container_client.container_apps.get(rg_name, app_name)
                             status = details.provisioning_state
-                            if status in ["Succeeded", "Running"]:
-                                healthy_apps[app_name] = status
-                            else:
-                                unhealthy_apps[app_name] = status
+
+                            if status not in ["Succeeded", "Running"]:
+                                any_unhealthy = True
+                                full_report += f"\n📦 Subscription: {sub_name}\n📁 Resource Group: {rg_name}\n⚠️ Unhealthy App:\n  - {app_name}: {status}\n"
+
                         except HttpResponseError as e:
-                            unhealthy_apps[app_name] = f"Error: {e.message}"
+                            any_unhealthy = True
+                            full_report += f"\n📦 Subscription: {sub_name}\n📁 Resource Group: {rg_name}\n❌ Failed to fetch app: {app_name}, Error: {e.message}\n"
+
                 except Exception as e:
                     print(f"❌ Error listing apps in RG '{rg_name}': {e}")
                     continue
-
-                # Format the section for this RG
-                full_report += f"\n📦 Subscription: {sub_name}\n📁 Resource Group: {rg_name}\n"
-                if healthy_apps:
-                    full_report += "✅ Healthy Apps:\n"
-                    for name, stat in healthy_apps.items():
-                        full_report += f"  - {name}: {stat}\n"
-                else:
-                    full_report += "✅ No healthy apps found.\n"
-
-                if unhealthy_apps:
-                    full_report += "\n⚠️ Unhealthy Apps:\n"
-                    for name, stat in unhealthy_apps.items():
-                        full_report += f"  - {name}: {stat}\n"
-                else:
-                    full_report += "\n🎉 No unhealthy apps detected.\n"
 
         except Exception as e:
             print(f"❌ Failed for subscription {sub_name}: {e}")
             continue
 
-    full_report += "\n\nThis is an automated email.\n\nRegards,\nMonitoring System\nPangea Platform"
-    send_summary_email(full_report)
+    if any_unhealthy:
+        full_report += "\n\nThis is an automated message.\n\nRegards,\nProduction Team\nPangea Platform"
+        send_summary_email(full_report)
+    else:
+        print("✅ All container apps are healthy. No email sent.")
 
 # === Main Entry ===
 if __name__ == "__main__":
