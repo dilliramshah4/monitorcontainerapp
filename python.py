@@ -1,23 +1,20 @@
-#!/usr/bin/env python3 
+#!/usr/bin/env python3  
 
 import os
-import smtplib
-from email.mime.text import MIMEText
+import requests
+from email.utils import formataddr
 from azure.identity import ClientSecretCredential
 from azure.mgmt.resource import SubscriptionClient, ResourceManagementClient
 from azure.mgmt.appcontainers import ContainerAppsAPIClient
 from azure.core.exceptions import HttpResponseError
 
 # === Environment Variables from GitHub Actions Secrets ===
-EMAIL = os.getenv("EMAIL")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
-TO_EMAIL = os.getenv("TO_EMAIL")
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
+EMAIL = os.getenv("EMAIL")  # Sender email
+TO_EMAIL = os.getenv("TO_EMAIL")  # Comma-separated
 AZURE_CLIENT_ID = os.getenv("AZURE_CLIENT_ID")
 AZURE_CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET")
 AZURE_TENANT_ID = os.getenv("AZURE_TENANT_ID")
-
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
 
 # === Authenticate with Azure using Service Principal ===
 credential = ClientSecretCredential(
@@ -27,30 +24,43 @@ credential = ClientSecretCredential(
 )
 sub_client = SubscriptionClient(credential)
 
-# === Send Email ===
+# === Send Email Using SendGrid ===
 def send_summary_email(report_body: str):
     subject = "[Pangea] Unhealthy Azure Container Apps Detected"
-
     recipients = [email.strip() for email in TO_EMAIL.split(",")]
 
-    msg = MIMEText(report_body)
-    msg["Subject"] = subject
-    msg["From"] = EMAIL
-    msg["To"] = ", ".join(recipients)
+    data = {
+        "personalizations": [
+            {
+                "to": [{"email": to} for to in recipients],
+                "subject": subject
+            }
+        ],
+        "from": {"email": EMAIL, "name": "Pangea Monitoring Bot"},
+        "content": [
+            {
+                "type": "text/plain",
+                "value": report_body
+            }
+        ]
+    }
 
-    try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(EMAIL, EMAIL_PASSWORD)
-            server.sendmail(EMAIL, recipients, msg.as_string())
-            print(f"📧 Email sent successfully to: {recipients}")
-    except Exception as e:
-        print(f"❌ Failed to send email: {e}")
+    headers = {
+        "Authorization": f"Bearer {SENDGRID_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    response = requests.post("https://api.sendgrid.com/v3/mail/send", headers=headers, json=data)
+
+    if response.status_code == 202:
+        print(f"📧 Email sent successfully to: {recipients}")
+    else:
+        print(f"❌ Failed to send email: {response.status_code} - {response.text}")
 
 # === Check Container Apps Across All Subscriptions ===
 def check_all_container_apps():
     full_report = "Dear Pangea Production Team,\n\nUnhealthy Azure Container Apps have been detected:\n"
-    any_unhealthy = False  # Only trigger mail if True
+    any_unhealthy = False
 
     for sub in sub_client.subscriptions.list():
         sub_id = sub.subscription_id
