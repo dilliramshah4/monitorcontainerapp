@@ -1,20 +1,23 @@
 #!/usr/bin/env python3  
 
 import os
-import requests
-from email.utils import formataddr
+import smtplib
+from email.mime.text import MIMEText
 from azure.identity import ClientSecretCredential
 from azure.mgmt.resource import SubscriptionClient, ResourceManagementClient
 from azure.mgmt.appcontainers import ContainerAppsAPIClient
 from azure.core.exceptions import HttpResponseError
 
 # === Environment Variables from GitHub Actions Secrets ===
-SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
-EMAIL = os.getenv("EMAIL")  # Sender email
-TO_EMAIL = os.getenv("TO_EMAIL")  # Comma-separated
+EMAIL = os.getenv("EMAIL")  # Sender Gmail address
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")  # Gmail App Password
+TO_EMAIL = os.getenv("TO_EMAIL")  # Comma-separated recipient list
 AZURE_CLIENT_ID = os.getenv("AZURE_CLIENT_ID")
 AZURE_CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET")
 AZURE_TENANT_ID = os.getenv("AZURE_TENANT_ID")
+
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
 
 # === Authenticate with Azure using Service Principal ===
 credential = ClientSecretCredential(
@@ -24,43 +27,30 @@ credential = ClientSecretCredential(
 )
 sub_client = SubscriptionClient(credential)
 
-# === Send Email Using SendGrid ===
+# === Send Email Using Gmail ===
 def send_summary_email(report_body: str):
-    subject = "[Pangea] Unhealthy Azure Container Apps Detected"
+    subject = "[Pangea] Azure Container App Health Report"
     recipients = [email.strip() for email in TO_EMAIL.split(",")]
 
-    data = {
-        "personalizations": [
-            {
-                "to": [{"email": to} for to in recipients],
-                "subject": subject
-            }
-        ],
-        "from": {"email": EMAIL, "name": "Pangea Monitoring Bot"},
-        "content": [
-            {
-                "type": "text/plain",
-                "value": report_body
-            }
-        ]
-    }
+    msg = MIMEText(report_body)
+    msg["Subject"] = subject
+    msg["From"] = EMAIL
+    msg["To"] = ", ".join(recipients)
 
-    headers = {
-        "Authorization": f"Bearer {SENDGRID_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(EMAIL, EMAIL_PASSWORD)
+            server.sendmail(EMAIL, recipients, msg.as_string())
+            print(f"📧 Email sent successfully to: {recipients}")
+    except Exception as e:
+        print(f"❌ Failed to send email: {e}")
 
-    response = requests.post("https://api.sendgrid.com/v3/mail/send", headers=headers, json=data)
-
-    if response.status_code == 202:
-        print(f"📧 Email sent successfully to: {recipients}")
-    else:
-        print(f"❌ Failed to send email: {response.status_code} - {response.text}")
-
-# === Check Container Apps Across All Subscriptions ===
+# === Check All Azure Container Apps and Report ===
 def check_all_container_apps():
-    full_report = "Dear Pangea Production Team,\n\nUnhealthy Azure Container Apps have been detected:\n"
-    any_unhealthy = False
+    full_report = "Dear Pangea Production Team,\n\nAzure Container App Health Status:\n"
+    healthy_apps = []
+    unhealthy_apps = []
 
     for sub in sub_client.subscriptions.list():
         sub_id = sub.subscription_id
@@ -73,7 +63,7 @@ def check_all_container_apps():
 
             for rg in rg_client.resource_groups.list():
                 rg_name = rg.name
-                print(f"\n🔍 Resource Group: {rg_name}")
+                print(f"🔍 Resource Group: {rg_name}")
 
                 try:
                     apps = container_client.container_apps.list_by_resource_group(rg_name)
@@ -83,13 +73,14 @@ def check_all_container_apps():
                             details = container_client.container_apps.get(rg_name, app_name)
                             status = details.provisioning_state
 
+                            entry = f"📦 {sub_name} | 📁 {rg_name} | 🧩 {app_name} : {status}"
                             if status not in ["Succeeded", "Running"]:
-                                any_unhealthy = True
-                                full_report += f"\n📦 Subscription: {sub_name}\n📁 Resource Group: {rg_name}\n⚠️ Unhealthy App:\n  - {app_name}: {status}\n"
+                                unhealthy_apps.append(entry)
+                            else:
+                                healthy_apps.append(entry)
 
                         except HttpResponseError as e:
-                            any_unhealthy = True
-                            full_report += f"\n📦 Subscription: {sub_name}\n📁 Resource Group: {rg_name}\n❌ Failed to fetch app: {app_name}, Error: {e.message}\n"
+                            unhealthy_apps.append(f"📦 {sub_name} | 📁 {rg_name} | ❌ Failed to fetch app: {app_name}, Error: {e.message}")
 
                 except Exception as e:
                     print(f"❌ Error listing apps in RG '{rg_name}': {e}")
@@ -99,12 +90,20 @@ def check_all_container_apps():
             print(f"❌ Failed for subscription {sub_name}: {e}")
             continue
 
-    if any_unhealthy:
-        full_report += "\nPlease take action if necessary.\n\nThis is an automated message.\n\nRegards,\nProduction Team\nPangea Platform"
-        send_summary_email(full_report)
+    # Append categorized results to report
+    if unhealthy_apps:
+        full_report += "\n❗ Unhealthy Container Apps:\n" + "\n".join(unhealthy_apps) + "\n"
     else:
-        print("✅ All container apps are healthy. No email sent.")
+        full_report += "\n✅ No unhealthy apps found.\n"
 
-# === Main Entry ===
+    if healthy_apps:
+        full_report += "\n✅ Healthy Container Apps:\n" + "\n".join(healthy_apps) + "\n"
+
+    full_report += "\nThis is an automated message.\n\nRegards,\nProduction Team\nPangea Platform"
+
+    # Send the final report
+    send_summary_email(full_report)
+
+# === Entry Point ===
 if __name__ == "__main__":
     check_all_container_apps()
