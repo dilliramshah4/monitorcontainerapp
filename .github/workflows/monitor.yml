@@ -2,7 +2,7 @@ name: Azure Container App Health Monitor
 
 on:
   schedule:
-    - cron: "*/2 * * * *"  # Runs every 30 minutes
+    - cron: "*/1 * * * *"  # Runs every 30 minutes
 
 jobs:
   monitor:
