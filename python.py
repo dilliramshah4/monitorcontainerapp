@@ -31,17 +31,19 @@ sub_client = SubscriptionClient(credential)
 def send_summary_email(report_body: str):
     subject = "[Pangea] Unhealthy Azure Container Apps Detected"
 
+    recipients = [email.strip() for email in TO_EMAIL.split(",")]
+
     msg = MIMEText(report_body)
     msg["Subject"] = subject
     msg["From"] = EMAIL
-    msg["To"] = TO_EMAIL
+    msg["To"] = ", ".join(recipients)
 
     try:
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
             server.login(EMAIL, EMAIL_PASSWORD)
-            server.sendmail(EMAIL, TO_EMAIL, msg.as_string())
-            print("📧 Email sent successfully")
+            server.sendmail(EMAIL, recipients, msg.as_string())
+            print(f"📧 Email sent successfully to: {recipients}")
     except Exception as e:
         print(f"❌ Failed to send email: {e}")
 
@@ -88,7 +90,7 @@ def check_all_container_apps():
             continue
 
     if any_unhealthy:
-        full_report += "\n\nThis is an automated message.\n\nRegards,\nProduction Team\nPangea Platform"
+        full_report += "\nPlease take action if necessary.\n\nThis is an automated message.\n\nRegards,\nProduction Team\nPangea Platform"
         send_summary_email(full_report)
     else:
         print("✅ All container apps are healthy. No email sent.")
