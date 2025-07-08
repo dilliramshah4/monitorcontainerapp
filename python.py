@@ -101,14 +101,24 @@ def check_endpoint_health(url: str) -> dict:
 # === Get App State Based on Active Revisions ===
 def get_container_app_state(container_client, rg_name, app_name):
     try:
-        revisions = container_client.container_apps_revisions.list(rg_name, app_name)
-        for rev in revisions:
-            if rev.properties.active:
-                return 'Running'
-        return 'NoActiveRevision'
+        # List revisions to check if there's at least one active
+        revisions = list(container_client.container_apps_revisions.list(rg_name, app_name))
+        active_revisions = [r for r in revisions if getattr(r.properties, 'active', False)]
+
+        if active_revisions:
+            return 'Running'
+        elif revisions:
+            return 'NoActiveRevision'
+        else:
+            return 'NoRevisionsFound'
+
+    except HttpResponseError as e:
+        logger.error(f"Azure API error while getting revisions for {app_name}: {e.message}")
+        return 'API_ERROR'
     except Exception as e:
-        logger.exception(f"Error fetching revision state for {app_name}: {str(e)}")
-        return 'ERROR'
+        logger.exception(f"Unhandled error while getting container app state for {app_name}")
+        return 'Unknown'
+
 
 # === HTML Report ===
 def generate_html_report(report_data: list) -> str:
