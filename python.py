@@ -82,6 +82,29 @@ def check_endpoint_health(url: str) -> dict:
                 'response_time': response.elapsed.total_seconds(),
                 'error': None if is_healthy else f"HTTP {response.status_code}"
             }
+        except requests.exceptions.SSLError as e:
+            return {
+                'healthy': False,
+                'status_code': None,
+                'response_time': None,
+                'error': f"SSL Error: {str(e)}"
+            }
+        except requests.exceptions.ConnectionError as e:
+            return {
+                'healthy': False,
+                'status_code': None,
+                'response_time': None,
+                'error': f"Connection Error: {str(e)}"
+            }
+        except requests.exceptions.Timeout as e:
+            if attempt == MAX_RETRIES:
+                return {
+                    'healthy': False,
+                    'status_code': None,
+                    'response_time': None,
+                    'error': "Timeout - Service may be overloaded or down"
+                }
+            time.sleep(RETRY_DELAY)
         except requests.exceptions.RequestException as e:
             if attempt == MAX_RETRIES:
                 return {
@@ -98,19 +121,32 @@ def check_endpoint_health(url: str) -> dict:
         'error': "Retries exhausted"
     }
 
-# === Get App State via SDK ===
-def get_container_app_state(container_client, rg_name, app_name):
+# === Check for Container Issues ===
+def check_container_issues(container_client, rg_name, app_name):
     try:
         app = container_client.container_apps.get(rg_name, app_name)
-        # Check both provisioningState and running state
-        provisioning_state = app.properties.provisioning_state
-        running_state = "Running" if app.properties.running else "Stopped"
+        issues = []
         
-        # Prefer running state if available, otherwise use provisioning state
-        return running_state if app.properties.running is not None else provisioning_state
+        # Check for image issues
+        for container in app.properties.template.containers:
+            if not container.image:
+                issues.append("Missing container image")
+            elif "error" in container.image.lower():
+                issues.append(f"Invalid image: {container.image}")
+        
+        # Check provisioning state
+        if app.properties.provisioning_state and "failed" in app.properties.provisioning_state.lower():
+            issues.append(f"Provisioning failed: {app.properties.provisioning_state}")
+            
+        # Check running state
+        if hasattr(app.properties, 'running') and not app.properties.running:
+            issues.append("Container is stopped")
+            
+        return ", ".join(issues) if issues else None
+        
     except Exception as e:
-        logger.error(f"Error fetching state for {app_name}: {str(e)}")
-        return "Unknown"
+        logger.error(f"Error checking container issues for {app_name}: {str(e)}")
+        return None
 
 # === HTML Report ===
 def generate_html_report(report_data: list) -> str:
@@ -121,17 +157,27 @@ def generate_html_report(report_data: list) -> str:
     <html>
     <head>
         <style>
-            body {{ font-family: Arial; margin: 20px; }}
-            table {{ border-collapse: collapse; width: 100%; }}
-            th, td {{ padding: 8px; border: 1px solid #ddd; }}
+            body {{ font-family: Arial, sans-serif; margin: 20px; }}
+            h1 {{ color: #333; }}
+            .header {{ margin-bottom: 20px; }}
+            table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; }}
+            th, td {{ padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }}
             th {{ background-color: #f2f2f2; }}
-            .unhealthy {{ color: red; }}
-            .stopped {{ color: #990000; background-color: #ffeeee; }}
+            .error {{ color: #d9534f; }}
+            .warning {{ color: #f0ad4e; }}
+            .critical {{ background-color: #f2dede; }}
+            .footer {{ margin-top: 20px; color: #777; }}
         </style>
     </head>
     <body>
-        <h1>Azure Container App Health Report</h1>
-        <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        <div class="header">
+            <h1>Azure Container App Health Report</h1>
+            <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        </div>
+        
+        <p>Dear Pangea Production Team,</p>
+        <p>The following container apps require your attention:</p>
+        
         <table>
             <tr>
                 <th>Subscription</th>
@@ -139,27 +185,42 @@ def generate_html_report(report_data: list) -> str:
                 <th>App Name</th>
                 <th>URL</th>
                 <th>Status</th>
-                <th>Azure State</th>
                 <th>Response Time</th>
                 <th>Details</th>
+                <th>Container Issues</th>
             </tr>
     """
+    
     for item in report_data:
-        status_class = "stopped" if item['azure_state'] == "Stopped" else "unhealthy"
-        status_text = f"HTTP {item['status_code']}" if item['status_code'] else item['error']
+        status_class = "error"
+        if item['status_code'] == 404:
+            status_class = "warning"
+        elif "timeout" in item['error'].lower():
+            status_class = "warning"
+            
         html += f"""
-            <tr>
+            <tr class="{status_class}">
                 <td>{item['subscription']}</td>
                 <td>{item['resource_group']}</td>
                 <td>{item['app_name']}</td>
                 <td><a href="{item['url']}">{item['url']}</a></td>
-                <td class="{status_class}">{status_text}</td>
-                <td class="{status_class}">{item['azure_state']}</td>
+                <td>{item['status_code'] or 'Error'}</td>
                 <td>{item['response_time'] or 'N/A'}s</td>
                 <td>{item['error'] or 'N/A'}</td>
+                <td>{item.get('container_issues', 'None detected')}</td>
             </tr>
         """
-    html += "</table><p>Regards,<br>Monitoring System</p></body></html>"
+    
+    html += """
+        </table>
+        
+        <div class="footer">
+            <p>Please investigate these issues promptly.</p>
+            <p>Regards,<br>Azure Container Apps Monitoring System</p>
+        </div>
+    </body>
+    </html>
+    """
     return html
 
 # === Main Function ===
@@ -200,9 +261,9 @@ def check_all_container_apps():
 
                     url = f"https://{fqdn}"
                     health = check_endpoint_health(url)
+                    container_issues = check_container_issues(container_client, rg_name, app_name)
 
-                    if not health['healthy']:
-                        azure_state = get_container_app_state(container_client, rg_name, app_name)
+                    if not health['healthy'] or container_issues:
                         failed_apps.append({
                             'subscription': sub_name,
                             'resource_group': rg_name,
@@ -211,9 +272,9 @@ def check_all_container_apps():
                             'status_code': health['status_code'],
                             'response_time': health['response_time'],
                             'error': health['error'],
-                            'azure_state': azure_state
+                            'container_issues': container_issues
                         })
-                        logger.warning(f"App unhealthy: {app_name} - {health['error']} | State: {azure_state}")
+                        logger.warning(f"App issue detected: {app_name} - {health['error'] or container_issues}")
 
                 except HttpResponseError as e:
                     logger.error(f"Error checking {app_name}: {str(e)}")
@@ -225,25 +286,33 @@ def check_all_container_apps():
                         'status_code': None,
                         'response_time': None,
                         'error': str(e),
-                        'azure_state': 'ERROR'
+                        'container_issues': "Unable to check container issues"
                     })
 
     if failed_apps:
-        plain_report = "Azure Container App Health Alert\n\n"
-        plain_report += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        plain_report = f"""Azure Container App Health Alert
+
+Dear Pangea Production Team,
+
+The following container apps require your attention:
+
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+"""
         for item in failed_apps:
-            status = f"HTTP {item['status_code']}" if item['status_code'] else f"ERROR: {item['error']}"
-            plain_report += (
-                f"Subscription: {item['subscription']}\n"
-                f"Resource Group: {item['resource_group']}\n"
-                f"App Name: {item['app_name']}\n"
-                f"URL: {item['url']}\n"
-                f"Azure State: {item['azure_state']}\n"
-                f"Status: {status}\n"
-                f"Response Time: {item.get('response_time', 'N/A')}s\n"
-                f"Details: {item.get('error', 'N/A')}\n"
-                f"{'-'*50}\n"
-            )
+            plain_report += f"""
+Subscription: {item['subscription']}
+Resource Group: {item['resource_group']}
+App Name: {item['app_name']}
+URL: {item['url']}
+Status: {item['status_code'] or 'Error'}
+Response Time: {item.get('response_time', 'N/A')}s
+Error Details: {item.get('error', 'N/A')}
+Container Issues: {item.get('container_issues', 'None detected')}
+{'='*50}
+"""
+        plain_report += "\nPlease investigate these issues promptly.\n\nRegards,\nAzure Container Apps Monitoring System"
+        
         html_report = generate_html_report(failed_apps)
         send_summary_email(plain_report, html_report)
     else:
