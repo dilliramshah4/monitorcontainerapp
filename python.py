@@ -38,12 +38,16 @@ logger = logging.getLogger(__name__)
 
 def send_summary_email(report_body: str, html_report: str = None):
     """Send email with monitoring results using SendGrid"""
+    if not SENDGRID_API_KEY or not FROM_EMAIL or not TO_EMAILS:
+        logger.warning("Email configuration incomplete - skipping email send")
+        return
+
     recipients = [email.strip() for email in TO_EMAILS.split(",") if email.strip()]
     if not recipients:
         logger.warning("No email recipients configured")
         return
 
-    subject = f"[Pangea] Azure Container App Health Alert - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    subject = f"Azure Container App Health Alert - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     
     try:
         message = Mail(
@@ -66,74 +70,66 @@ def send_summary_email(report_body: str, html_report: str = None):
 
 def check_endpoint_health(url: str) -> dict:
     """Enhanced health check with detailed error handling"""
+    health_info = {
+        'healthy': False,
+        'status_code': None,
+        'response_time': None,
+        'error': None,
+        'state': 'UNKNOWN'
+    }
+
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = requests.get(
                 url,
                 timeout=TIMEOUT,
-                headers={'User-Agent': 'PangeaContainerAppMonitor/1.0'}
+                headers={'User-Agent': 'AzureContainerAppMonitor/1.0'}
             )
             
-            return {
-                'healthy': response.status_code == 200,
+            health_info.update({
+                'healthy': response.status_code < 400,
                 'status_code': response.status_code,
                 'response_time': response.elapsed.total_seconds(),
-                'error': None,
-                'state': 'RUNNING'  # Default assumption
-            }
+                'state': 'RUNNING'
+            })
+            return health_info
+            
         except requests.exceptions.SSLError as e:
-            return {
-                'healthy': False,
-                'status_code': None,
-                'response_time': None,
+            health_info.update({
                 'error': f"SSL Error: {str(e)}",
                 'state': 'SSL_ERROR'
-            }
+            })
+            return health_info
         except requests.exceptions.ConnectionError as e:
-            # Check if this is specifically a "Connection refused" error
             if "Connection refused" in str(e):
-                return {
-                    'healthy': False,
-                    'status_code': None,
-                    'response_time': None,
+                health_info.update({
                     'error': "Connection refused (app may be stopped)",
                     'state': 'POTENTIALLY_STOPPED'
-                }
-            return {
-                'healthy': False,
-                'status_code': None,
-                'response_time': None,
-                'error': f"Connection Error: {str(e)}",
-                'state': 'CONNECTION_ERROR'
-            }
+                })
+            else:
+                health_info.update({
+                    'error': f"Connection Error: {str(e)}",
+                    'state': 'CONNECTION_ERROR'
+                })
+            return health_info
         except requests.exceptions.Timeout as e:
             if attempt == MAX_RETRIES:
-                return {
-                    'healthy': False,
-                    'status_code': None,
-                    'response_time': None,
+                health_info.update({
                     'error': "Timeout - Service may be overloaded or down",
                     'state': 'TIMEOUT'
-                }
+                })
             time.sleep(RETRY_DELAY)
         except requests.exceptions.RequestException as e:
             if attempt == MAX_RETRIES:
-                return {
-                    'healthy': False,
-                    'status_code': None,
-                    'response_time': None,
+                health_info.update({
                     'error': str(e),
                     'state': 'GENERIC_ERROR'
-                }
+                })
             time.sleep(RETRY_DELAY)
     
-    return {
-        'healthy': False,
-        'status_code': None,
-        'response_time': None,
-        'error': 'All retries failed',
-        'state': 'RETRIES_EXHAUSTED'
-    }
+    health_info['error'] = 'All retries failed'
+    health_info['state'] = 'RETRIES_EXHAUSTED'
+    return health_info
 
 def get_container_app_state(container_client, rg_name, app_name):
     """Get the actual state of the container app from Azure"""
@@ -166,8 +162,7 @@ def generate_html_report(report_data: list) -> str:
     </head>
     <body>
         <h1>Azure Container App Health Alert</h1>
-        <p>Dear Pangea Production Team,</p>
-        <p>The following container apps are experiencing issues:</p>
+        <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
         <table>
             <tr>
                 <th>Subscription</th>
@@ -175,7 +170,7 @@ def generate_html_report(report_data: list) -> str:
                 <th>App Name</th>
                 <th>URL</th>
                 <th>Status</th>
-                <th>App State</th>
+                <th>Azure State</th>
                 <th>Response Time</th>
                 <th>Details</th>
             </tr>
@@ -183,9 +178,9 @@ def generate_html_report(report_data: list) -> str:
     
     for item in report_data:
         # Determine CSS class based on state
-        if item['state'] == 'STOPPED':
+        if item['azure_state'] == 'Stopped':
             status_class = "stopped"
-        elif not item['healthy']:
+        elif not item.get('healthy', False):
             status_class = "unhealthy"
         else:
             status_class = "healthy"
@@ -199,16 +194,16 @@ def generate_html_report(report_data: list) -> str:
                 <td>{item['app_name']}</td>
                 <td><a href="{item['url']}">{item['url']}</a></td>
                 <td class="{status_class}">{status_text}</td>
-                <td class="{status_class}">{item['state']}</td>
-                <td>{item['response_time'] or 'N/A'}s</td>
-                <td>{item['error'] or 'N/A'}</td>
+                <td class="{status_class}">{item['azure_state']}</td>
+                <td>{item.get('response_time', 'N/A')}s</td>
+                <td>{item.get('error', 'N/A')}</td>
             </tr>
         """
     
     html += """
         </table>
         <p>Please investigate these services immediately.</p>
-        <p>Regards,<br>Monitoring System<br>Pangea Platform</p>
+        <p>Regards,<br>Monitoring System</p>
     </body>
     </html>
     """
@@ -216,95 +211,108 @@ def generate_html_report(report_data: list) -> str:
 
 def check_all_container_apps():
     """Enhanced monitoring function with app state detection"""
+    if not all([AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID]):
+        logger.error("Azure credentials not configured")
+        return
+
     credential = ClientSecretCredential(
         client_id=AZURE_CLIENT_ID,
         client_secret=AZURE_CLIENT_SECRET,
         tenant_id=AZURE_TENANT_ID
     )
     
-    sub_client = SubscriptionClient(credential)
     failed_apps = []
     
-    for sub in sub_client.subscriptions.list():
-        sub_id = sub.subscription_id
-        sub_name = sub.display_name
-        logger.info(f"Checking subscription: {sub_name}")
+    try:
+        sub_client = SubscriptionClient(credential)
         
-        try:
-            rg_client = ResourceManagementClient(credential, sub_id)
-            container_client = ContainerAppsAPIClient(credential, sub_id)
+        for sub in sub_client.subscriptions.list():
+            sub_id = sub.subscription_id
+            sub_name = sub.display_name
+            logger.info(f"Checking subscription: {sub_name}")
             
-            for rg in rg_client.resource_groups.list():
-                rg_name = rg.name
-                logger.info(f"Checking resource group: {rg_name}")
+            try:
+                rg_client = ResourceManagementClient(credential, sub_id)
+                container_client = ContainerAppsAPIClient(credential, sub_id)
                 
-                try:
-                    apps = container_client.container_apps.list_by_resource_group(rg_name)
+                for rg in rg_client.resource_groups.list():
+                    rg_name = rg.name
+                    logger.info(f"Checking resource group: {rg_name}")
                     
-                    for app in apps:
-                        app_name = app.name
-                        try:
-                            details = container_client.container_apps.get(rg_name, app_name)
-                            fqdn = getattr(details.configuration.ingress, 'fqdn', None)
-                            
-                            if not fqdn:
-                                logger.info(f"Skipping {app_name} - no public endpoint")
-                                continue
+                    try:
+                        apps = container_client.container_apps.list_by_resource_group(rg_name)
+                        
+                        for app in apps:
+                            app_name = app.name
+                            try:
+                                details = container_client.container_apps.get(rg_name, app_name)
+                                fqdn = getattr(details.configuration.ingress, 'fqdn', None)
                                 
-                            url = f"https://{fqdn}"
-                            logger.info(f"Checking {app_name} at {url}")
-                            
-                            # Get health status
-                            health = check_endpoint_health(url)
-                            
-                            # Get actual app state from Azure
-                            app_state = get_container_app_state(container_client, rg_name, app_name)
-                            
-                            # If health check suggests stopped but Azure says running, verify
-                            if health['state'] == 'POTENTIALLY_STOPPED' and app_state == 'Running':
-                                health['state'] = 'RUNNING_BUT_UNRESPONSIVE'
-                            
-                            if not health['healthy'] or app_state != 'Running':
+                                if not fqdn:
+                                    logger.info(f"Skipping {app_name} - no public endpoint")
+                                    continue
+                                    
+                                url = f"https://{fqdn}"
+                                logger.info(f"Checking {app_name} at {url}")
+                                
+                                # Get health status
+                                health = check_endpoint_health(url)
+                                
+                                # Get actual app state from Azure
+                                azure_state = get_container_app_state(container_client, rg_name, app_name)
+                                
+                                # If health check suggests stopped but Azure says running, verify
+                                if health['state'] == 'POTENTIALLY_STOPPED' and azure_state == 'Running':
+                                    health['state'] = 'RUNNING_BUT_UNRESPONSIVE'
+                                
+                                if not health['healthy'] or azure_state != 'Running':
+                                    failed_app = {
+                                        'subscription': sub_name,
+                                        'resource_group': rg_name,
+                                        'app_name': app_name,
+                                        'url': url,
+                                        'status_code': health['status_code'],
+                                        'response_time': health['response_time'],
+                                        'error': health['error'],
+                                        'azure_state': azure_state,
+                                        'health_state': health['state'],
+                                        'healthy': health['healthy']
+                                    }
+                                    failed_apps.append(failed_app)
+                                    logger.warning(f"Unhealthy: {app_name} - Azure State: {azure_state} - Health State: {health['state']}")
+                                    
+                            except HttpResponseError as e:
+                                logger.error(f"Error checking {app_name}: {str(e)}")
                                 failed_apps.append({
                                     'subscription': sub_name,
                                     'resource_group': rg_name,
                                     'app_name': app_name,
-                                    'url': url,
-                                    'status_code': health['status_code'],
-                                    'response_time': health['response_time'],
-                                    'error': health['error'],
-                                    'state': app_state,
-                                    'health_state': health['state']
+                                    'url': 'N/A',
+                                    'status_code': None,
+                                    'response_time': None,
+                                    'error': str(e),
+                                    'azure_state': 'ERROR',
+                                    'health_state': 'ERROR',
+                                    'healthy': False
                                 })
-                                logger.warning(f"Unhealthy: {app_name} - State: {app_state} - {health['error'] or health['status_code']}")
                                 
-                        except HttpResponseError as e:
-                            logger.error(f"Error checking {app_name}: {str(e)}")
-                            failed_apps.append({
-                                'subscription': sub_name,
-                                'resource_group': rg_name,
-                                'app_name': app_name,
-                                'url': 'N/A',
-                                'status_code': None,
-                                'response_time': None,
-                                'error': str(e),
-                                'state': 'ERROR',
-                                'health_state': 'ERROR'
-                            })
-                            
-                except Exception as e:
-                    logger.error(f"Error listing apps in {rg_name}: {str(e)}")
-                    continue
-                    
-        except Exception as e:
-            logger.error(f"Error processing subscription {sub_name}: {str(e)}")
-            continue
+                    except Exception as e:
+                        logger.error(f"Error listing apps in {rg_name}: {str(e)}")
+                        continue
+                        
+            except Exception as e:
+                logger.error(f"Error processing subscription {sub_name}: {str(e)}")
+                continue
     
+    except Exception as e:
+        logger.error(f"Error initializing Azure clients: {str(e)}")
+        return
+
     if failed_apps:
         # Generate plain text report
         plain_report = f"Azure Container App Health Alert\n\n"
         plain_report += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        plain_report += f"Unhealthy/Stopped Applications:\n\n"
+        plain_report += f"Unhealthy/Stopped Applications ({len(failed_apps)}):\n\n"
         
         for item in failed_apps:
             status = f"HTTP {item['status_code']}" if item['status_code'] else f"ERROR: {item['error']}"
@@ -313,19 +321,20 @@ def check_all_container_apps():
                 f"Resource Group: {item['resource_group']}\n"
                 f"App Name: {item['app_name']}\n"
                 f"URL: {item['url']}\n"
-                f"Azure State: {item['state']}\n"
+                f"Azure State: {item['azure_state']}\n"
                 f"Health State: {item['health_state']}\n"
                 f"Status: {status}\n"
-                f"Response Time: {item['response_time'] or 'N/A'}s\n"
-                f"Details: {item['error'] or 'N/A'}\n"
+                f"Response Time: {item.get('response_time', 'N/A')}s\n"
+                f"Details: {item.get('error', 'N/A')}\n"
                 f"{'-'*50}\n"
             )
         
         plain_report += "\nAction Required:\n"
-        plain_report += "- For STOPPED apps: Consider starting them if needed\n"
-        plain_report += "- For UNRESPONSIVE apps: Check logs and resource usage\n"
-        plain_report += "- For CONNECTION errors: Verify network configuration\n\n"
-        plain_report += "Regards,\nMonitoring System\nPangea Platform"
+        plain_report += "- STOPPED apps: Consider starting them if needed\n"
+        plain_report += "- RUNNING_BUT_UNRESPONSIVE apps: Check logs and resource usage\n"
+        plain_report += "- CONNECTION_ERROR apps: Verify network configuration\n"
+        plain_report += "- SSL_ERROR apps: Check certificate configuration\n\n"
+        plain_report += "Regards,\nMonitoring System"
         
         # Generate HTML report
         html_report = generate_html_report(failed_apps)
@@ -335,6 +344,6 @@ def check_all_container_apps():
         logger.info("All container apps are healthy - no alerts sent")
 
 if __name__ == "__main__":
-    logger.info("Starting enhanced Azure Container Apps health check")
+    logger.info("Starting Azure Container Apps health check")
     check_all_container_apps()
     logger.info("Health check completed")
