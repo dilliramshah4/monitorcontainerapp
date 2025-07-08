@@ -157,17 +157,17 @@ def generate_html_report(report_data: list) -> str:
     <html>
     <head>
         <style>
-            body {{ font-family: Arial, sans-serif; margin: 20px; }}
-            h1 {{ color: #333; }}
-            .header {{ margin-bottom: 20px; }}
-            table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; }}
-            th, td {{ padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }}
-            th {{ background-color: #f2f2f2; }}
-            .error {{ color: #d9534f; }}
-            .warning {{ color: #f0ad4e; }}
-            .critical {{ background-color: #f2dede; }}
-            .footer {{ margin-top: 20px; color: #777; }}
-        </style>
+    body { font-family: Arial, sans-serif; margin: 20px; color: black; }
+    h1 { color: black; }
+    .header { margin-bottom: 20px; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 20px; color: black; }
+    th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+    th { background-color: #f2f2f2; color: black; }
+    a { color: blue; text-decoration: none; }
+    .status { color: red; font-weight: bold; }
+    .footer { margin-top: 20px; color: black; }
+</style>
+
     </head>
     <body>
         <div class="header">
@@ -216,7 +216,8 @@ def generate_html_report(report_data: list) -> str:
         
         <div class="footer">
             <p>Please investigate these issues promptly.</p>
-            <p>Regards,<br>Azure Container Apps Monitoring System</p>
+            <p>Regards,<br>Production Team - Pangea</p>
+
         </div>
     </body>
     </html>
