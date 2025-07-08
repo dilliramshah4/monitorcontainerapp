@@ -100,20 +100,14 @@ def check_endpoint_health(url: str) -> dict:
     }
 
 # === Get App State via ARM (LifecycleState) ===
-def get_container_app_state_via_arm(subscription_id, rg_name, app_name):
+def get_container_app_state(container_client, rg_name, app_name):
     try:
-        cmd = [
-            "az", "resource", "show",
-            "--ids", f"/subscriptions/{subscription_id}/resourceGroups/{rg_name}/providers/Microsoft.App/containerApps/{app_name}",
-            "--query", "properties.lifecycleState",
-            "--output", "tsv"
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        lifecycle_state = result.stdout.strip()
-        return lifecycle_state
-    except subprocess.CalledProcessError as e:
-        logger.error(f"[ARM ERROR] Failed to get lifecycle state for {app_name}: {e.stderr.strip()}")
+        app = container_client.container_apps.get(rg_name, app_name)
+        return app.properties.lifecycle_state or "Unknown"
+    except Exception as e:
+        logger.error(f"Error fetching lifecycle state for {app_name}: {str(e)}")
         return "Unknown"
+
 
 # === HTML Report ===
 def generate_html_report(report_data: list) -> str:
