@@ -101,24 +101,14 @@ def check_endpoint_health(url: str) -> dict:
 # === Get App State Based on Active Revisions ===
 def get_container_app_state(container_client, rg_name, app_name):
     try:
-        # List revisions to check if there's at least one active
-        revisions = list(container_client.container_apps_revisions.list(rg_name, app_name))
-        active_revisions = [r for r in revisions if getattr(r.properties, 'active', False)]
-
-        if active_revisions:
+        app = container_client.container_apps.get(rg_name, app_name)
+        if app.latest_revision_fqdn:
             return 'Running'
-        elif revisions:
-            return 'NoActiveRevision'
         else:
-            return 'NoRevisionsFound'
-
-    except HttpResponseError as e:
-        logger.error(f"Azure API error while getting revisions for {app_name}: {e.message}")
-        return 'API_ERROR'
+            return 'StoppedOrIdle'
     except Exception as e:
-        logger.exception(f"Unhandled error while getting container app state for {app_name}")
+        logger.exception(f"[EXCEPTION] Fallback check failed for {app_name}")
         return 'Unknown'
-
 
 # === HTML Report ===
 def generate_html_report(report_data: list) -> str:
