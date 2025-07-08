@@ -152,10 +152,15 @@ def generate_html_report(report_data: list) -> str:
 def get_container_app_state(container_client, rg_name, app_name):
     try:
         app = container_client.container_apps.get(rg_name, app_name)
-        return getattr(app, 'provisioning_state', 'UNKNOWN')  # <-- FIXED HERE
+        
+        if hasattr(app.properties, 'latest_ready_revision_name') and app.properties.latest_ready_revision_name:
+            return 'Running'
+        else:
+            return 'StoppedOrNoReadyRevision'
     except Exception as e:
         logger.error(f"Error getting state for {app_name}: {str(e)}")
         return 'ERROR'
+
 
 
 # === Main Function ===
