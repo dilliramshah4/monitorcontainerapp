@@ -4,6 +4,7 @@ import os
 import requests
 import logging
 import time
+import subprocess
 from datetime import datetime
 from azure.identity import ClientSecretCredential
 from azure.mgmt.resource import SubscriptionClient, ResourceManagementClient
@@ -98,17 +99,21 @@ def check_endpoint_health(url: str) -> dict:
         'error': "Retries exhausted"
     }
 
-# === Get App State Based on Active Revisions ===
-def get_container_app_state(container_client, rg_name, app_name):
+# === Get App State via ARM (LifecycleState) ===
+def get_container_app_state_via_arm(subscription_id, rg_name, app_name):
     try:
-        app = container_client.container_apps.get(rg_name, app_name)
-        if app.latest_revision_fqdn:
-            return 'Running'
-        else:
-            return 'StoppedOrIdle'
-    except Exception as e:
-        logger.exception(f"[EXCEPTION] Fallback check failed for {app_name}")
-        return 'Unknown'
+        cmd = [
+            "az", "resource", "show",
+            "--ids", f"/subscriptions/{subscription_id}/resourceGroups/{rg_name}/providers/Microsoft.App/containerApps/{app_name}",
+            "--query", "properties.lifecycleState",
+            "--output", "tsv"
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        lifecycle_state = result.stdout.strip()
+        return lifecycle_state
+    except subprocess.CalledProcessError as e:
+        logger.error(f"[ARM ERROR] Failed to get lifecycle state for {app_name}: {e.stderr.strip()}")
+        return "Unknown"
 
 # === HTML Report ===
 def generate_html_report(report_data: list) -> str:
@@ -200,7 +205,7 @@ def check_all_container_apps():
                     health = check_endpoint_health(url)
 
                     if not health['healthy']:
-                        azure_state = get_container_app_state(container_client, rg_name, app_name)
+                        azure_state = get_container_app_state_via_arm(sub_id, rg_name, app_name)
                         failed_apps.append({
                             'subscription': sub_name,
                             'resource_group': rg_name,
