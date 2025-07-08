@@ -102,9 +102,14 @@ def check_endpoint_health(url: str) -> dict:
 def get_container_app_state(container_client, rg_name, app_name):
     try:
         app = container_client.container_apps.get(rg_name, app_name)
-        return app.properties.lifecycle_state or "Unknown"
+        # Check both provisioningState and running state
+        provisioning_state = app.properties.provisioning_state
+        running_state = "Running" if app.properties.running else "Stopped"
+        
+        # Prefer running state if available, otherwise use provisioning state
+        return running_state if app.properties.running is not None else provisioning_state
     except Exception as e:
-        logger.error(f"Error fetching lifecycle state for {app_name}: {str(e)}")
+        logger.error(f"Error fetching state for {app_name}: {str(e)}")
         return "Unknown"
 
 # === HTML Report ===
@@ -140,7 +145,7 @@ def generate_html_report(report_data: list) -> str:
             </tr>
     """
     for item in report_data:
-        status_class = "stopped" if item['azure_state'] != "Running" else "unhealthy"
+        status_class = "stopped" if item['azure_state'] == "Stopped" else "unhealthy"
         status_text = f"HTTP {item['status_code']}" if item['status_code'] else item['error']
         html += f"""
             <tr>
