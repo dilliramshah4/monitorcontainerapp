@@ -85,7 +85,7 @@ def check_endpoint_health(url: str) -> dict:
                 url,
                 timeout=TIMEOUT,
                 headers={'User-Agent': 'AzureContainerAppMonitor/1.0'},
-                allow_redirects=False  # Don't follow redirects to get actual status code
+                allow_redirects=False
             )
             
             is_healthy = response.status_code in HEALTHY_STATUS_CODES
@@ -158,7 +158,6 @@ def generate_html_report(report_data: list) -> str:
             table {{ border-collapse: collapse; width: 100%; }}
             th, td {{ padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }}
             th {{ background-color: #f2f2f2; }}
-            .healthy {{ color: green; }}
             .unhealthy {{ color: red; }}
             .stopped {{ color: #990000; background-color: #ffeeee; }}
             .warning {{ color: orange; }}
@@ -181,13 +180,11 @@ def generate_html_report(report_data: list) -> str:
     """
     
     for item in report_data:
-        # Determine CSS class based on health status
+        # Determine CSS class based on state
         if item['azure_state'] != 'Running':
             status_class = "stopped"
-        elif not item.get('healthy', False):
-            status_class = "unhealthy"
         else:
-            status_class = "healthy"
+            status_class = "unhealthy"
             
         status_text = f"HTTP {item['status_code']}" if item['status_code'] else item['error']
         
@@ -206,7 +203,7 @@ def generate_html_report(report_data: list) -> str:
     
     html += """
         </table>
-        <p>Please investigate the highlighted services immediately.</p>
+        <p>Please investigate these services immediately.</p>
         <p>Regards,<br>Monitoring System</p>
     </body>
     </html>
@@ -278,8 +275,7 @@ def check_all_container_apps():
                                         'response_time': health['response_time'],
                                         'error': health['error'],
                                         'azure_state': azure_state,
-                                        'health_state': health['state'],
-                                        'healthy': health['healthy']
+                                        'health_state': health['state']
                                     }
                                     failed_apps.append(failed_app)
                                     logger.warning(f"Unhealthy/Stopped: {app_name} - Status: {health['status_code']} - Azure State: {azure_state}")
@@ -295,8 +291,7 @@ def check_all_container_apps():
                                     'response_time': None,
                                     'error': str(e),
                                     'azure_state': 'ERROR',
-                                    'health_state': 'ERROR',
-                                    'healthy': False
+                                    'health_state': 'ERROR'
                                 })
                                 
                     except Exception as e:
@@ -324,8 +319,8 @@ def check_all_container_apps():
                 f"Resource Group: {item['resource_group']}\n"
                 f"App Name: {item['app_name']}\n"
                 f"URL: {item['url']}\n"
-                f"Azure State: {item['azure_state']}\n"
                 f"Status: {status}\n"
+                f"Azure State: {item['azure_state']}\n"
                 f"Response Time: {item.get('response_time', 'N/A')}s\n"
                 f"Details: {item.get('error', 'N/A')}\n"
                 f"{'-'*50}\n"
@@ -333,9 +328,8 @@ def check_all_container_apps():
         
         plain_report += "\nAction Required:\n"
         plain_report += "- STOPPED apps: Consider starting them if needed\n"
-        plain_report += "- HTTP 404/5xx apps: Check application deployment and configuration\n"
-        plain_report += "- CONNECTION_ERROR apps: Verify network configuration\n"
-        plain_report += "- SSL_ERROR apps: Check certificate configuration\n\n"
+        plain_report += "- HTTP 404/5xx apps: Check application deployment\n"
+        plain_report += "- Connection errors: Verify network configuration\n\n"
         plain_report += "Regards,\nMonitoring System"
         
         # Generate HTML report
