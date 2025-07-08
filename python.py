@@ -182,7 +182,7 @@ def generate_html_report(report_data: list) -> str:
     
     for item in report_data:
         # Determine CSS class based on health status
-        if item['azure_state'] == 'Stopped':
+        if item['azure_state'] != 'Running':
             status_class = "stopped"
         elif not item.get('healthy', False):
             status_class = "unhealthy"
@@ -266,7 +266,7 @@ def check_all_container_apps():
                                 azure_state = get_container_app_state(container_client, rg_name, app_name)
                                 
                                 # Only report as failed if:
-                                # 1. The app is not healthy (not HTTP 200) OR
+                                # 1. The health check failed (not HTTP 200-204) OR
                                 # 2. The Azure state is not 'Running'
                                 if not health['healthy'] or azure_state != 'Running':
                                     failed_app = {
@@ -282,7 +282,7 @@ def check_all_container_apps():
                                         'healthy': health['healthy']
                                     }
                                     failed_apps.append(failed_app)
-                                    logger.warning(f"Unhealthy: {app_name} - Status: {health['status_code']} - Azure State: {azure_state}")
+                                    logger.warning(f"Unhealthy/Stopped: {app_name} - Status: {health['status_code']} - Azure State: {azure_state}")
                                     
                             except HttpResponseError as e:
                                 logger.error(f"Error checking {app_name}: {str(e)}")
