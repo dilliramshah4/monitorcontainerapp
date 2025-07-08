@@ -98,6 +98,18 @@ def check_endpoint_health(url: str) -> dict:
         'error': "Retries exhausted"
     }
 
+# === Get App State Based on Active Revisions ===
+def get_container_app_state(container_client, rg_name, app_name):
+    try:
+        revisions = container_client.container_apps_revisions.list(rg_name, app_name)
+        for rev in revisions:
+            if rev.properties.active:
+                return 'Running'
+        return 'NoActiveRevision'
+    except Exception as e:
+        logger.exception(f"Error fetching revision state for {app_name}: {str(e)}")
+        return 'ERROR'
+
 # === HTML Report ===
 def generate_html_report(report_data: list) -> str:
     if not report_data:
@@ -147,21 +159,6 @@ def generate_html_report(report_data: list) -> str:
         """
     html += "</table><p>Regards,<br>Monitoring System</p></body></html>"
     return html
-
-# === Get App Provisioning State ===
-def get_container_app_state(container_client, rg_name, app_name):
-    try:
-        revisions = container_client.container_apps_revisions.list(rg_name, app_name)
-        for rev in revisions:
-            if rev.properties.active:
-                return 'Running'
-        return 'NoActiveRevision'
-    except Exception as e:
-        logger.exception(f"Error fetching revision state for {app_name}: {str(e)}")
-        return 'ERROR'
-
-
-
 
 # === Main Function ===
 def check_all_container_apps():
