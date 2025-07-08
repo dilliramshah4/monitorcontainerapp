@@ -83,67 +83,39 @@ def check_endpoint_health(url: str) -> dict:
                 'error': None if is_healthy else f"HTTP {response.status_code}"
             }
         except requests.exceptions.SSLError as e:
-            return {
-                'healthy': False,
-                'status_code': None,
-                'response_time': None,
-                'error': f"SSL Error: {str(e)}"
-            }
+            return {'healthy': False, 'status_code': None, 'response_time': None, 'error': f"SSL Error: {str(e)}"}
         except requests.exceptions.ConnectionError as e:
-            return {
-                'healthy': False,
-                'status_code': None,
-                'response_time': None,
-                'error': f"Connection Error: {str(e)}"
-            }
+            return {'healthy': False, 'status_code': None, 'response_time': None, 'error': f"Connection Error: {str(e)}"}
         except requests.exceptions.Timeout as e:
             if attempt == MAX_RETRIES:
-                return {
-                    'healthy': False,
-                    'status_code': None,
-                    'response_time': None,
-                    'error': "Timeout - Service may be overloaded or down"
-                }
+                return {'healthy': False, 'status_code': None, 'response_time': None, 'error': "Timeout - Service may be overloaded or down"}
             time.sleep(RETRY_DELAY)
         except requests.exceptions.RequestException as e:
             if attempt == MAX_RETRIES:
-                return {
-                    'healthy': False,
-                    'status_code': None,
-                    'response_time': None,
-                    'error': str(e)
-                }
+                return {'healthy': False, 'status_code': None, 'response_time': None, 'error': str(e)}
             time.sleep(RETRY_DELAY)
-    return {
-        'healthy': False,
-        'status_code': None,
-        'response_time': None,
-        'error': "Retries exhausted"
-    }
+    return {'healthy': False, 'status_code': None, 'response_time': None, 'error': "Retries exhausted"}
 
 # === Check for Container Issues ===
 def check_container_issues(container_client, rg_name, app_name):
     try:
         app = container_client.container_apps.get(rg_name, app_name)
         issues = []
-        
-        # Check for image issues
+
         for container in app.properties.template.containers:
             if not container.image:
                 issues.append("Missing container image")
             elif "error" in container.image.lower():
                 issues.append(f"Invalid image: {container.image}")
-        
-        # Check provisioning state
+
         if app.properties.provisioning_state and "failed" in app.properties.provisioning_state.lower():
             issues.append(f"Provisioning failed: {app.properties.provisioning_state}")
-            
-        # Check running state
+
         if hasattr(app.properties, 'running') and not app.properties.running:
             issues.append("Container is stopped")
-            
+
         return ", ".join(issues) if issues else None
-        
+
     except Exception as e:
         logger.error(f"Error checking container issues for {app_name}: {str(e)}")
         return None
@@ -157,15 +129,15 @@ def generate_html_report(report_data: list) -> str:
     <html>
     <head>
         <style>
-    body { font-family: Arial, sans-serif; margin: 20px; color: black; }
-    h1 { color: black; }
-    .header { margin-bottom: 20px; }
-    table { border-collapse: collapse; width: 100%; margin-bottom: 20px; color: black; }
-    th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
-    th { background-color: #f2f2f2; color: black; }
-    a { color: blue; text-decoration: none; }
-    .status { color: red; font-weight: bold; }
-    .footer { margin-top: 20px; color: black; }
+    body {{ font-family: Arial, sans-serif; margin: 20px; color: black; }}
+    h1 {{ color: black; }}
+    .header {{ margin-bottom: 20px; }}
+    table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; color: black; }}
+    th, td {{ padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }}
+    th {{ background-color: #f2f2f2; color: black; }}
+    a {{ color: blue; text-decoration: none; }}
+    .status {{ color: red; font-weight: bold; }}
+    .footer {{ margin-top: 20px; color: black; }}
 </style>
 
     </head>
@@ -174,10 +146,10 @@ def generate_html_report(report_data: list) -> str:
             <h1>Azure Container App Health Report</h1>
             <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
         </div>
-        
+
         <p>Dear Pangea Production Team,</p>
         <p>The following container apps require your attention:</p>
-        
+
         <table>
             <tr>
                 <th>Subscription</th>
@@ -190,34 +162,27 @@ def generate_html_report(report_data: list) -> str:
                 <th>Container Issues</th>
             </tr>
     """
-    
+
     for item in report_data:
-        status_class = "error"
-        if item['status_code'] == 404:
-            status_class = "warning"
-        elif "timeout" in item['error'].lower():
-            status_class = "warning"
-            
         html += f"""
-            <tr class="{status_class}">
+            <tr>
                 <td>{item['subscription']}</td>
                 <td>{item['resource_group']}</td>
                 <td>{item['app_name']}</td>
                 <td><a href="{item['url']}">{item['url']}</a></td>
-                <td>{item['status_code'] or 'Error'}</td>
+                <td class="status">{item['status_code'] or 'Error'}</td>
                 <td>{item['response_time'] or 'N/A'}s</td>
                 <td>{item['error'] or 'N/A'}</td>
                 <td>{item.get('container_issues', 'None detected')}</td>
             </tr>
         """
-    
+
     html += """
         </table>
-        
+
         <div class="footer">
             <p>Please investigate these issues promptly.</p>
             <p>Regards,<br>Production Team - Pangea</p>
-
         </div>
     </body>
     </html>
@@ -313,7 +278,7 @@ Container Issues: {item.get('container_issues', 'None detected')}
 {'='*50}
 """
         plain_report += "\nPlease investigate these issues promptly.\n\nRegards,\nAzure Container Apps Monitoring System"
-        
+
         html_report = generate_html_report(failed_apps)
         send_summary_email(plain_report, html_report)
     else:
