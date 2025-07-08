@@ -24,6 +24,7 @@ TO_EMAILS = os.getenv("TO_EMAIL")
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 TIMEOUT = 10
+HEALTHY_STATUS_CODES = {200, 201, 202, 204}  # Consider these status codes as healthy
 
 # === Setup Logging ===
 logging.basicConfig(
@@ -83,14 +84,17 @@ def check_endpoint_health(url: str) -> dict:
             response = requests.get(
                 url,
                 timeout=TIMEOUT,
-                headers={'User-Agent': 'AzureContainerAppMonitor/1.0'}
+                headers={'User-Agent': 'AzureContainerAppMonitor/1.0'},
+                allow_redirects=False  # Don't follow redirects to get actual status code
             )
             
+            is_healthy = response.status_code in HEALTHY_STATUS_CODES
             health_info.update({
-                'healthy': response.status_code < 400,
+                'healthy': is_healthy,
                 'status_code': response.status_code,
                 'response_time': response.elapsed.total_seconds(),
-                'state': 'RUNNING'
+                'state': 'RUNNING',
+                'error': None if is_healthy else f"HTTP {response.status_code}"
             })
             return health_info
             
@@ -177,7 +181,7 @@ def generate_html_report(report_data: list) -> str:
     """
     
     for item in report_data:
-        # Determine CSS class based on state
+        # Determine CSS class based on health status
         if item['azure_state'] == 'Stopped':
             status_class = "stopped"
         elif not item.get('healthy', False):
@@ -202,7 +206,7 @@ def generate_html_report(report_data: list) -> str:
     
     html += """
         </table>
-        <p>Please investigate these services immediately.</p>
+        <p>Please investigate the highlighted services immediately.</p>
         <p>Regards,<br>Monitoring System</p>
     </body>
     </html>
@@ -210,7 +214,7 @@ def generate_html_report(report_data: list) -> str:
     return html
 
 def check_all_container_apps():
-    """Enhanced monitoring function with app state detection"""
+    """Enhanced monitoring function with proper error detection"""
     if not all([AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID]):
         logger.error("Azure credentials not configured")
         return
@@ -261,10 +265,9 @@ def check_all_container_apps():
                                 # Get actual app state from Azure
                                 azure_state = get_container_app_state(container_client, rg_name, app_name)
                                 
-                                # If health check suggests stopped but Azure says running, verify
-                                if health['state'] == 'POTENTIALLY_STOPPED' and azure_state == 'Running':
-                                    health['state'] = 'RUNNING_BUT_UNRESPONSIVE'
-                                
+                                # Only report as failed if:
+                                # 1. The app is not healthy (not HTTP 200) OR
+                                # 2. The Azure state is not 'Running'
                                 if not health['healthy'] or azure_state != 'Running':
                                     failed_app = {
                                         'subscription': sub_name,
@@ -279,7 +282,7 @@ def check_all_container_apps():
                                         'healthy': health['healthy']
                                     }
                                     failed_apps.append(failed_app)
-                                    logger.warning(f"Unhealthy: {app_name} - Azure State: {azure_state} - Health State: {health['state']}")
+                                    logger.warning(f"Unhealthy: {app_name} - Status: {health['status_code']} - Azure State: {azure_state}")
                                     
                             except HttpResponseError as e:
                                 logger.error(f"Error checking {app_name}: {str(e)}")
@@ -322,7 +325,6 @@ def check_all_container_apps():
                 f"App Name: {item['app_name']}\n"
                 f"URL: {item['url']}\n"
                 f"Azure State: {item['azure_state']}\n"
-                f"Health State: {item['health_state']}\n"
                 f"Status: {status}\n"
                 f"Response Time: {item.get('response_time', 'N/A')}s\n"
                 f"Details: {item.get('error', 'N/A')}\n"
@@ -331,7 +333,7 @@ def check_all_container_apps():
         
         plain_report += "\nAction Required:\n"
         plain_report += "- STOPPED apps: Consider starting them if needed\n"
-        plain_report += "- RUNNING_BUT_UNRESPONSIVE apps: Check logs and resource usage\n"
+        plain_report += "- HTTP 404/5xx apps: Check application deployment and configuration\n"
         plain_report += "- CONNECTION_ERROR apps: Verify network configuration\n"
         plain_report += "- SSL_ERROR apps: Check certificate configuration\n\n"
         plain_report += "Regards,\nMonitoring System"
